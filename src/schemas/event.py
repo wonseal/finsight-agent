@@ -30,12 +30,9 @@ class EventAttribution(BaseModel):
     source_form: str
     source_filing_date: str
     confidence: float = Field(ge=0.0, le=1.0)
-
     @model_validator(mode="after")
     def check_unfound_event_type(self) -> EventAttribution:
         if not self.event_found:
-            self.event_type = "unexplained" 
-        elif self.event_type != "unexplained":
             self.event_type = "unexplained"
         return self
 
