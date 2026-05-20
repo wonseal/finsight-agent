@@ -23,6 +23,3 @@ data/outputs/*
 
 # Script output files
 output/
-
-# Old misspelled module (renamed to filing_downloader.py)
-src/sec/filling_dowloader.py
