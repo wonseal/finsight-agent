@@ -61,6 +61,11 @@ analyze = st.button("Analyze")
 if analyze and ticker_input:
     ticker = ticker_input.strip().upper()
 
+    # Clear previous results if ticker changed (but keep if same ticker to allow re-analysis without re-fetching)
+    if st.session_state.get("result", {}).get("ticker") != ticker:
+        st.session_state.pop("ai_analysis", None)
+        st.session_state.pop("attribution_result", None)
+
     with st.spinner(f"Loading {ticker} data..."):
         try:
             cik, company_name, df = load_company_metrics(ticker)
@@ -257,24 +262,28 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     st.warning("OPENAI_API_KEY is not set. Skipping AI analysis.")
 else:
-    openai_client = openai.OpenAI(api_key=api_key)
+    if "ai_analysis" not in st.session_state:
+        openai_client = openai.OpenAI(api_key=api_key)
 
-    def stream_response():
-        stream = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-        )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+        def stream_response():
+            stream = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+            )
+            for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
 
-    try:
-        with st.spinner("Analyzing with GPT..."):
-            st.write_stream(stream_response())
-    except Exception as e:
-        st.error(f"GPT error: {e}")
+        try:
+            with st.spinner("Analyzing with GPT..."):
+                full_response = st.write_stream(stream_response())
+                st.session_state["ai_analysis"] = full_response
+        except Exception as e:
+            st.error(f"GPT error: {e}")
+    else:
+        st.write(st.session_state["ai_analysis"])
 
 # ── Event Attribution ─────────────────────────────────────────────────────────
 
@@ -283,27 +292,22 @@ st.subheader("Event Attribution")
 
 if not os.getenv("OPENAI_API_KEY"):
     st.info("Event Attribution requires an OpenAI API key (not configured in this deployment).")
+
 elif st.button("Analyze Event Attribution for Top Anomaly"):
     with st.spinner("Detecting anomalies..."):
-        anomalies = detect_all(df)
+        sec_client = SECClient(user_agent=os.getenv("SEC_USER_AGENT", "FinSightAgent honghak0929@gmail.com"))
+        submissions = SubmissionsService(sec_client).get_submissions(cik)
+        sic_code = submissions.get("sic")
+        anomalies = detect_all(df, sic_code=sic_code)
 
     if anomalies.empty:
-        st.info("No anomalies detected.")
+        st.session_state["attribution_result"] = None
     else:
         priority = anomalies[anomalies["severity"].isin(["high", "medium"])]
         top_anomaly = (priority if not priority.empty else anomalies).iloc[0].to_dict()
 
-        st.markdown("**Selected Anomaly**")
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Period", top_anomaly["period"])
-        col_b.metric("Metric", top_anomaly["metric"])
-        col_c.metric("Severity", top_anomaly["severity"])
-        col_d.metric("Type", top_anomaly["anomaly_type"])
-
         with st.spinner("Searching filings and running LLM analysis..."):
             try:
-                sec_client = SECClient(user_agent=os.getenv("SEC_USER_AGENT", "FinSightAgent honghak0929@gmail.com"))
-                submissions = SubmissionsService(sec_client).get_submissions(cik)
                 filings_df = SubmissionsService(sec_client).recent_filings_to_df(submissions)
                 event_df = SubmissionsService(sec_client).filter_event_filings(filings_df)
                 candidates = EventRetriever().find_candidate_filings(event_df, int(top_anomaly["period"]))
@@ -312,11 +316,33 @@ elif st.button("Analyze Event Attribution for Top Anomaly"):
                 downloader = FilingDownloader(sec_client)
                 analyzer = EventAnalyzer(openai_client, downloader)
                 attribution = analyzer.find_best_attribution(candidates, cik, top_anomaly)
-
                 scored = RiskScorer().score_anomaly(top_anomaly, attribution)
+
+                st.session_state["attribution_result"] = {
+                    "top_anomaly": top_anomaly,
+                    "attribution": attribution,
+                    "scored": scored,
+                }
             except Exception as e:
                 st.error(f"Attribution error: {e}")
-                st.stop()
+
+
+if "attribution_result" in st.session_state:
+    res = st.session_state["attribution_result"]
+    
+    if res is None:
+        st.info("No anomalies detected.")
+    else:
+        top_anomaly = res["top_anomaly"]
+        attribution = res["attribution"]
+        scored = res["scored"]
+
+        st.markdown("**Selected Anomaly**")
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("Period", top_anomaly["period"])
+        col_b.metric("Metric", top_anomaly["metric"])
+        col_c.metric("Severity", top_anomaly["severity"])
+        col_d.metric("Type", top_anomaly["anomaly_type"])
 
         st.markdown("**Event Attribution**")
         found_label = "Explained" if attribution.event_found else "Unexplained"
