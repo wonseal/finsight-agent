@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.DS_Store
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+
+# Cached SEC responses — large JSON files, regenerate from API
+data/cache/*.json
+data/cache/companyfacts/
+!data/cache/.gitkeep
+
+# Generated reports
+data/outputs/*
+!data/outputs/.gitkeep
+
+# Script output files
+output/
